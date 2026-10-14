@@ -347,6 +347,36 @@ fn build_selection_trace(
     })
 }
 
+/// Log every scored candidate at DEBUG, one row per worker and rank.
+///
+/// This is the `DYN_LOG=debug` view of a routing decision. These rows are emitted
+/// from the scheduler actor task, which has no request span, so `request_id` and
+/// `worker_type` are stamped explicitly: `request_id` matches the `[ROUTING] Best`
+/// line and `worker_type` separates the prefill and decode decisions of one
+/// request. The `enabled!` check keeps the loop out of the hot path when DEBUG is off.
+fn log_scored_candidates(
+    request: &SchedulingRequest,
+    worker_type: &'static str,
+    candidates: &[ScoredWorkerCandidate],
+    selected_row: usize,
+) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
+    let request_id = request.mode.request_id().unwrap_or("-");
+    for (row, candidate) in candidates.iter().enumerate() {
+        tracing::debug!(
+            request_id,
+            worker_type,
+            worker_id = candidate.worker.worker_id,
+            dp_rank = candidate.worker.dp_rank,
+            cost = candidate.cost,
+            selected = row == selected_row,
+            "Scored worker candidate"
+        );
+    }
+}
+
 fn log_selection<C: WorkerConfigLike>(
     workers: &HashMap<WorkerId, C>,
     request: &SchedulingRequest,
@@ -497,6 +527,7 @@ fn select_worker_with_policy<C: WorkerConfigLike>(
                     }
                     .into());
                 };
+                log_scored_candidates(request, worker_type, candidates, row);
                 let trace = request.selection_trace.map(|spec| {
                     build_selection_trace(
                         candidates,
